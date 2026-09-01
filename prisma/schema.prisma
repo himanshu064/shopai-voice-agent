@@ -1,0 +1,395 @@
+// ShopAI — Prisma schema
+// Mirrors spec §17 (Database Model). PostgreSQL (Neon) provider.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // pooled — used by the app at runtime
+  directUrl = env("DIRECT_URL")   // non-pooled — used by Prisma Migrate
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum ReturnType {
+  RETURN
+  REFUND
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum ConversationChannel {
+  TEXT
+  VOICE
+  PHONE
+}
+
+enum ConversationStatus {
+  ACTIVE
+  RESOLVED
+  ESCALATED
+  ENDED
+}
+
+enum MessageRole {
+  USER
+  AGENT
+  SYSTEM
+  TOOL
+}
+
+enum ToolCallStatus {
+  SUCCESS
+  ERROR
+}
+
+enum SlotStatus {
+  OPEN
+  HELD
+  BOOKED
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum KnowledgeStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+// ─────────────────────────────────────────────────────────────
+// Auth + Customer
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  role         UserRole @default(CUSTOMER)
+  customerId   String?  @unique
+  customer     Customer? @relation(fields: [customerId], references: [id])
+  createdAt    DateTime @default(now())
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+
+  user          User?
+  carts         Cart[]
+  orders        Order[]
+  supportTickets SupportTicket[]
+  conversations Conversation[]
+  appointments  Appointment[]
+
+  @@index([phone])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Catalog
+// ─────────────────────────────────────────────────────────────
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  products    Product[]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  price       Decimal  @db.Decimal(10, 2)
+  imageUrl    String?
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  highlights  String[] @default([])
+  specs       Json? // [{ group, rows: [[label, value], …] }]
+  avgRating   Float    @default(0)
+  reviewCount Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  variants   ProductVariant[]
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+  reviews    Review[]
+
+  @@index([categoryId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  author    String
+  location  String?
+  rating    Int // 1–5
+  title     String
+  body      String
+  verified  Boolean  @default(true)
+  helpful   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+model ProductVariant {
+  id         String  @id @default(cuid())
+  productId  String
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name       String // e.g. "Black / Medium"
+  sku        String  @unique
+  priceDelta Decimal @default(0) @db.Decimal(10, 2)
+  inventory  Int     @default(0)
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@index([productId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Cart
+// ─────────────────────────────────────────────────────────────
+
+model Cart {
+  id         String     @id @default(cuid())
+  customerId String
+  customer   Customer   @relation(fields: [customerId], references: [id])
+  items      CartItem[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([customerId])
+}
+
+model CartItem {
+  id        String          @id @default(cuid())
+  cartId    String
+  cart      Cart            @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product         @relation(fields: [productId], references: [id])
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
+  quantity  Int             @default(1)
+
+  @@index([cartId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Orders
+// ─────────────────────────────────────────────────────────────
+
+model Order {
+  id                String      @id @default(cuid())
+  customerId        String
+  customer          Customer    @relation(fields: [customerId], references: [id])
+  status            OrderStatus @default(PENDING)
+  total             Decimal     @db.Decimal(10, 2)
+  shippingAddress   String
+  trackingNumber    String?
+  estimatedDelivery DateTime?
+  createdAt         DateTime    @default(now())
+
+  items          OrderItem[]
+  returnsRefunds ReturnRefund[]
+  supportTickets SupportTicket[]
+
+  @@index([customerId])
+}
+
+model OrderItem {
+  id        String          @id @default(cuid())
+  orderId   String
+  order     Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product         @relation(fields: [productId], references: [id])
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
+  quantity  Int
+  unitPrice Decimal         @db.Decimal(10, 2)
+
+  returnsRefunds ReturnRefund[]
+
+  @@index([orderId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Returns / Refunds
+// ─────────────────────────────────────────────────────────────
+
+model ReturnRefund {
+  id        String       @id @default(cuid())
+  orderId   String
+  order     Order        @relation(fields: [orderId], references: [id])
+  itemId    String
+  item      OrderItem    @relation(fields: [itemId], references: [id])
+  type      ReturnType
+  reason    String
+  status    ReturnStatus @default(REQUESTED)
+  reference String       @unique
+  createdAt DateTime     @default(now())
+
+  @@index([orderId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Support / Conversations
+// ─────────────────────────────────────────────────────────────
+
+model SupportTicket {
+  id          String         @id @default(cuid())
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id])
+  orderId     String?
+  order       Order?         @relation(fields: [orderId], references: [id])
+  category    String
+  priority    TicketPriority @default(MEDIUM)
+  status      TicketStatus   @default(OPEN)
+  description String
+  aiSummary   String?
+  createdAt   DateTime       @default(now())
+
+  @@index([customerId])
+}
+
+model Conversation {
+  id                     String              @id @default(cuid())
+  customerId             String?
+  customer               Customer?           @relation(fields: [customerId], references: [id])
+  channel                ConversationChannel
+  externalConversationId String?             @unique
+  status                 ConversationStatus  @default(ACTIVE)
+  startedAt              DateTime            @default(now())
+  endedAt                DateTime?
+  resolution             String?
+  summary                String?
+
+  messages  Message[]
+  toolCalls ToolCall[]
+
+  @@index([customerId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+}
+
+model ToolCall {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolName       String
+  input          Json?
+  output         Json?
+  status         ToolCallStatus
+  latencyMs      Int?
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Knowledge / Booking / Agent config
+// ─────────────────────────────────────────────────────────────
+
+model KnowledgeDocument {
+  id            String          @id @default(cuid())
+  title         String
+  source        String?
+  externalDocId String?
+  status        KnowledgeStatus @default(DRAFT)
+  createdAt     DateTime        @default(now())
+}
+
+model ConsultationSlot {
+  id        String     @id @default(cuid())
+  service   String
+  startsAt  DateTime
+  endsAt    DateTime
+  status    SlotStatus @default(OPEN)
+  createdAt DateTime   @default(now())
+
+  appointments Appointment[]
+
+  @@index([service, startsAt])
+}
+
+model Appointment {
+  id                 String            @id @default(cuid())
+  customerId         String
+  customer           Customer          @relation(fields: [customerId], references: [id])
+  slotId             String
+  slot               ConsultationSlot  @relation(fields: [slotId], references: [id])
+  status             AppointmentStatus @default(BOOKED)
+  type               String
+  confirmationSentAt DateTime?
+  createdAt          DateTime          @default(now())
+
+  @@index([customerId])
+}
+
+model AgentConfig {
+  id             String   @id @default(cuid())
+  version        Int      @unique
+  prompt         String
+  voiceId        String?
+  toolsConfig    Json?
+  knowledgeConfig Json?
+  isActive       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+}
